@@ -27,6 +27,14 @@ except ImportError:
 # ==========================================
 
 CONFIG_FILE = ".app_config.json"
+SIGNATURE = "@19walid"
+LOGO_FILE = "logo.png"  # optionnel : placer à côté du script / de l'exe
+
+
+def resource_path(name):
+    """Chemin d'une ressource, compatible script et exe PyInstaller (_MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
 
 I18N = {
     "FR": {
@@ -63,6 +71,8 @@ I18N = {
         "lbl_status_error": "Erreur pendant le traitement.",
         "warn_no_files": "Veuillez sélectionner les deux fichiers d'entrée.",
         "err_no_valid_points": "Aucune coordonnée valide n'a été trouvée dans les fichiers.",
+        "lbl_out_dir": "Dossier de sortie :",
+        "err_out_dir": "Impossible d'utiliser le dossier de sortie :",
     },
     "EN": {
         "title": "Telecom Spatial Studio Pro - MSAN & Mobile",
@@ -98,6 +108,8 @@ I18N = {
         "lbl_status_error": "Error encountered during execution.",
         "warn_no_files": "Please select both MSAN and Mobile input files.",
         "err_no_valid_points": "No valid coordinates found in input datasets.",
+        "lbl_out_dir": "Output Folder:",
+        "err_out_dir": "Cannot use the output folder:",
     }
 }
 
@@ -176,6 +188,14 @@ class KMLExporter:
             return False
 
         return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
+    @staticmethod
+    def _format_distance(value):
+        """Distance lisible (ex: "1.23 km") ou "N/A" si absente / invalide."""
+        dist = KMLExporter._safe_float(value)
+        if dist is None or not math.isfinite(dist):
+            return "N/A"
+        return f"{dist:.2f} km"
 
     @staticmethod
     def _sector_points(lat, lon, azimuth, radius_km=0.5,
@@ -285,6 +305,13 @@ class KMLExporter:
                 '        <width>2</width>',
                 '      </LineStyle>',
                 '      <PolyStyle><color>33000000</color></PolyStyle>',
+                '    </Style>',
+                f'    <Style id="distLabelTop{rank}">',
+                '      <IconStyle><scale>0.0</scale></IconStyle>',
+                '      <LabelStyle>',
+                f'        <color>{color}</color>',
+                '        <scale>0.9</scale>',
+                '      </LabelStyle>',
                 '    </Style>',
                 ''
             ]
@@ -679,7 +706,8 @@ class KMLExporter:
 
                 best_cell_txt = str(best_cell) if pd.notna(best_cell) else "N/A"
                 azimuth_txt = str(azimuth) if pd.notna(azimuth) else "N/A"
-                distance_txt = str(distance) if pd.notna(distance) else "N/A"
+                distance_txt = KMLExporter._format_distance(distance)
+                dist_suffix = f" ({distance_txt})" if distance_txt != "N/A" else ""
                 angle_txt = str(angle_dev) if pd.notna(angle_dev) else "N/A"
 
                 description = (
@@ -688,7 +716,7 @@ class KMLExporter:
                     f'<b>Rank:</b> TOP {rank}<br/>'
                     f'<b>Best Cell:</b> {escape(best_cell_txt)}<br/>'
                     f'<b>Azimuth:</b> {escape(azimuth_txt)}<br/>'
-                    f'<b>Distance:</b> {escape(distance_txt)} km<br/>'
+                    f'<b>Distance:</b> {escape(distance_txt)}<br/>'
                     f'<b>Angle Deviation:</b> {escape(angle_txt)}°'
                 )
 
@@ -696,7 +724,7 @@ class KMLExporter:
                 kml += [
                     '      <Placemark>',
                     f'        <name>{escape(msan_name)} → '
-                    f'{escape(mob_site_name)}</name>',
+                    f'{escape(mob_site_name)}{escape(dist_suffix)}</name>',
                     f'        <styleUrl>#lineTop{rank}</styleUrl>',
                     f'        <description><![CDATA[{description}]]></description>',
                     '        <LineString>',
@@ -708,6 +736,21 @@ class KMLExporter:
                     '        </LineString>',
                     '      </Placemark>'
                 ]
+
+                # Étiquette de distance visible directement sur la carte,
+                # placée au milieu de la ligne (même dossier TOPn).
+                if dist_suffix:
+                    mid_lat = (msan_lat + mob_lat) / 2.0
+                    mid_lon = (msan_lon + mob_lon) / 2.0
+                    kml += [
+                        '      <Placemark>',
+                        f'        <name>{escape(distance_txt)}</name>',
+                        f'        <styleUrl>#distLabelTop{rank}</styleUrl>',
+                        '        <Point>',
+                        f'          <coordinates>{mid_lon:.7f},{mid_lat:.7f},0</coordinates>',
+                        '        </Point>',
+                        '      </Placemark>'
+                    ]
 
             audit(f"0{5 + rank} - MSAN to Mobile Connections TOP{rank}", "GENERATED", "LineString", f"TOP{rank} Connections", f"Created: {connection_count}; Skipped: {connection_skipped}")
             kml += ['    </Folder>', '']
@@ -1079,6 +1122,7 @@ class ApplicationGUI:
         self.app_cfg = {
             "last_msan_path": "",
             "last_mob_path": "",
+            "output_dir": "",
             "top_n": 3,
             "cand_pool": 15,
             "max_dist_km": 50.0,
@@ -1101,13 +1145,35 @@ class ApplicationGUI:
         except Exception:
             pass
 
+    def _build_logo(self, parent):
+        """Logo: logo.png si présent, sinon badge dessiné (aucun fichier requis)."""
+        logo_path = resource_path(LOGO_FILE)
+        if os.path.exists(logo_path):
+            try:
+                img = tk.PhotoImage(file=logo_path)
+                factor = max(1, img.height() // 40)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+                self._logo_img = img  # garder une référence (sinon effacé par le GC)
+                return tk.Label(parent, image=img)
+            except tk.TclError:
+                pass
+        canvas = tk.Canvas(parent, width=40, height=40, highlightthickness=0)
+        canvas.create_oval(2, 2, 38, 38, fill="#1F4E78", outline="#0B2A45", width=2)
+        canvas.create_text(20, 20, text="19W", fill="white", font=("Segoe UI", 10, "bold"))
+        return canvas
+
     def setup_ui(self):
+        self.i18n_labels = []  # (widget, i18n_key, strip_colon)
         self.root.geometry(self.app_cfg.get("window_size", "920x720"))
         self.root.minsize(800, 600)
 
         # Top Bar (Language & Title)
         top_bar = ttk.Frame(self.root)
         top_bar.pack(fill="x", padx=15, pady=8)
+
+        self.logo_widget = self._build_logo(top_bar)
+        self.logo_widget.pack(side="left", padx=(0, 8))
 
         self.lbl_title = tk.Label(top_bar, text="", font=("Segoe UI", 14, "bold"), fg="#1F4E78")
         self.lbl_title.pack(side="left")
@@ -1135,19 +1201,31 @@ class ApplicationGUI:
         self.sec_files = ttk.LabelFrame(self.tab_workflow, text="")
         self.sec_files.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(self.sec_files, text="MSAN File:").grid(row=0, column=0, sticky="w", padx=8, pady=5)
+        lbl = ttk.Label(self.sec_files, text="MSAN File:")
+        lbl.grid(row=0, column=0, sticky="w", padx=8, pady=5)
+        self.i18n_labels.append((lbl, "msan_file", False))
         self.ent_msan = ttk.Entry(self.sec_files, width=60)
         self.ent_msan.insert(0, self.app_cfg.get("last_msan_path", ""))
         self.ent_msan.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         self.btn_browse_msan = ttk.Button(self.sec_files, text="...", command=lambda: self.browse_file("msan"))
         self.btn_browse_msan.grid(row=0, column=2, padx=8, pady=5)
 
-        ttk.Label(self.sec_files, text="Mobile File:").grid(row=1, column=0, sticky="w", padx=8, pady=5)
+        lbl = ttk.Label(self.sec_files, text="Mobile File:")
+        lbl.grid(row=1, column=0, sticky="w", padx=8, pady=5)
+        self.i18n_labels.append((lbl, "mob_file", False))
         self.ent_mob = ttk.Entry(self.sec_files, width=60)
         self.ent_mob.insert(0, self.app_cfg.get("last_mob_path", ""))
         self.ent_mob.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         self.btn_browse_mob = ttk.Button(self.sec_files, text="...", command=lambda: self.browse_file("mob"))
         self.btn_browse_mob.grid(row=1, column=2, padx=8, pady=5)
+
+        self.lbl_out_dir = ttk.Label(self.sec_files, text="Output Folder:")
+        self.lbl_out_dir.grid(row=2, column=0, sticky="w", padx=8, pady=5)
+        self.ent_out = ttk.Entry(self.sec_files, width=60)
+        self.ent_out.insert(0, self.app_cfg.get("output_dir", ""))
+        self.ent_out.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        self.btn_browse_out = ttk.Button(self.sec_files, text="...", command=self.browse_output_dir)
+        self.btn_browse_out.grid(row=2, column=2, padx=8, pady=5)
 
         self.sec_files.columnconfigure(1, weight=1)
 
@@ -1178,13 +1256,17 @@ class ApplicationGUI:
         self.mob_fields = [("lbl_site_name", "mob_site", ["site"]), ("lbl_cell_name", "mob_cell", ["cell"]), ("lbl_azimut", "mob_azimut", ["azi"]), ("lbl_lon", "mob_lon", ["lon"]), ("lbl_lat", "mob_lat", ["lat"])]
 
         for i, (lbl_key, key, _) in enumerate(self.msan_fields):
-            ttk.Label(map_left, text=lbl_key).grid(row=i, column=0, sticky="w", padx=5, pady=3)
+            lbl = ttk.Label(map_left, text=lbl_key)
+            lbl.grid(row=i, column=0, sticky="w", padx=5, pady=3)
+            self.i18n_labels.append((lbl, lbl_key, False))
             cb = ttk.Combobox(map_left, state="disabled", width=22)
             cb.grid(row=i, column=1, padx=5, pady=3)
             self.combos[key] = cb
 
         for i, (lbl_key, key, _) in enumerate(self.mob_fields):
-            ttk.Label(map_right, text=lbl_key).grid(row=i, column=0, sticky="w", padx=5, pady=3)
+            lbl = ttk.Label(map_right, text=lbl_key)
+            lbl.grid(row=i, column=0, sticky="w", padx=5, pady=3)
+            self.i18n_labels.append((lbl, lbl_key, False))
             cb = ttk.Combobox(map_right, state="disabled", width=22)
             cb.grid(row=i, column=1, padx=5, pady=3)
             self.combos[key] = cb
@@ -1210,22 +1292,30 @@ class ApplicationGUI:
         self.sec_engine_cfg = ttk.LabelFrame(self.tab_settings, text="")
         self.sec_engine_cfg.pack(fill="both", expand=True, padx=15, pady=15)
 
-        ttk.Label(self.sec_engine_cfg, text="Top N Neighbors:").grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        lbl = ttk.Label(self.sec_engine_cfg, text="Top N Neighbors:")
+        lbl.grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        self.i18n_labels.append((lbl, "lbl_top_n", False))
         self.spin_top_n = ttk.Spinbox(self.sec_engine_cfg, from_=1, to=10, width=8)
         self.spin_top_n.set(self.app_cfg["top_n"])
         self.spin_top_n.grid(row=0, column=1, padx=10, pady=10, sticky="w")
 
-        ttk.Label(self.sec_engine_cfg, text="Candidate Pool (k_search):").grid(row=1, column=0, sticky="w", padx=10, pady=10)
+        lbl = ttk.Label(self.sec_engine_cfg, text="Candidate Pool (k_search):")
+        lbl.grid(row=1, column=0, sticky="w", padx=10, pady=10)
+        self.i18n_labels.append((lbl, "lbl_cand_pool", False))
         self.spin_cand_pool = ttk.Spinbox(self.sec_engine_cfg, from_=5, to=50, width=8)
         self.spin_cand_pool.set(self.app_cfg["cand_pool"])
         self.spin_cand_pool.grid(row=1, column=1, padx=10, pady=10, sticky="w")
 
-        ttk.Label(self.sec_engine_cfg, text="Max Distance Cap (km):").grid(row=2, column=0, sticky="w", padx=10, pady=10)
+        lbl = ttk.Label(self.sec_engine_cfg, text="Max Distance Cap (km):")
+        lbl.grid(row=2, column=0, sticky="w", padx=10, pady=10)
+        self.i18n_labels.append((lbl, "lbl_max_dist", False))
         self.ent_max_dist = ttk.Entry(self.sec_engine_cfg, width=10)
         self.ent_max_dist.insert(0, str(self.app_cfg["max_dist_km"]))
         self.ent_max_dist.grid(row=2, column=1, padx=10, pady=10, sticky="w")
 
-        ttk.Label(self.sec_engine_cfg, text="Decimal Separator:").grid(row=3, column=0, sticky="w", padx=10, pady=10)
+        lbl = ttk.Label(self.sec_engine_cfg, text="Decimal Separator:")
+        lbl.grid(row=3, column=0, sticky="w", padx=10, pady=10)
+        self.i18n_labels.append((lbl, "lbl_locale", False))
         self.combo_locale = ttk.Combobox(self.sec_engine_cfg, values=[", (Comma)", ". (Dot)"], width=12, state="readonly")
         self.combo_locale.set(", (Comma)" if self.app_cfg["locale_sep"] == "," else ". (Dot)")
         self.combo_locale.grid(row=3, column=1, padx=10, pady=10, sticky="w")
@@ -1233,6 +1323,7 @@ class ApplicationGUI:
         self.var_kml = tk.BooleanVar(value=self.app_cfg["export_kml"])
         self.chk_kml = ttk.Checkbutton(self.sec_engine_cfg, text="Export KML Map File", variable=self.var_kml)
         self.chk_kml.grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=10)
+        self.i18n_labels.append((self.chk_kml, "lbl_kml_export", True))
 
         # --- TAB 3: AUDIT TABLE ---
         self.tree_audit = ttk.Treeview(self.tab_audit, columns=("File", "Row", "Column", "Value", "Reason"), show="headings")
@@ -1255,8 +1346,12 @@ class ApplicationGUI:
         self.tree_kml_audit.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Status Footer
-        self.lbl_status = ttk.Label(self.root, text="", font=("Segoe UI", 9, "italic"))
-        self.lbl_status.pack(side="bottom", fill="x", padx=15, pady=5)
+        footer = ttk.Frame(self.root)
+        footer.pack(side="bottom", fill="x", padx=15, pady=5)
+        self.lbl_status = ttk.Label(footer, text="", font=("Segoe UI", 9, "italic"))
+        self.lbl_status.pack(side="left", fill="x", expand=True)
+        self.lbl_signature = tk.Label(footer, text=f"© {SIGNATURE}", font=("Segoe UI", 9, "bold"), fg="#1F4E78")
+        self.lbl_signature.pack(side="right")
 
     def on_lang_change(self, event=None):
         self.lang = self.combo_lang.get()
@@ -1275,12 +1370,17 @@ class ApplicationGUI:
         self.sec_files.config(text=t["sec_files"])
         self.sec_mapping.config(text=t["sec_mapping"])
         self.sec_engine_cfg.config(text=t["sec_engine_cfg"])
+        self.lbl_out_dir.config(text=t["lbl_out_dir"])
 
         self.btn_discovery.config(text=t["btn_discovery"])
         self.btn_load_prof.config(text=t["btn_load_profile"])
         self.btn_save_prof.config(text=t["btn_save_profile"])
         self.btn_run.config(text=t["btn_run"])
         self.btn_cancel.config(text=t["btn_cancel"])
+
+        for widget, key, strip_colon in self.i18n_labels:
+            txt = t[key]
+            widget.config(text=txt.rstrip(" :") if strip_colon else txt)
 
         self.lbl_status.config(text=t["lbl_status_init"])
 
@@ -1293,6 +1393,18 @@ class ApplicationGUI:
             else:
                 self.ent_mob.delete(0, tk.END)
                 self.ent_mob.insert(0, path)
+
+    def browse_output_dir(self):
+        initial = self.ent_out.get().strip()
+        if not initial or not os.path.isdir(initial):
+            initial = os.path.dirname(self.ent_msan.get().strip()) or os.getcwd()
+        path = filedialog.askdirectory(initialdir=initial)
+        if path:
+            path = os.path.normpath(path)
+            self.ent_out.delete(0, tk.END)
+            self.ent_out.insert(0, path)
+            self.app_cfg["output_dir"] = path
+            self.save_app_config()
 
     def log(self, text):
         self.msg_queue.put(("LOG", text))
@@ -1374,6 +1486,18 @@ class ApplicationGUI:
                 messagebox.showerror("Error", f"Failed to load profile: {str(e)}")
 
     def start_processing(self):
+        # Dossier de sortie : vide = dossier de travail courant (comportement historique)
+        out_dir = self.ent_out.get().strip() or os.getcwd()
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            if not os.access(out_dir, os.W_OK):
+                raise PermissionError("Write access denied")
+        except Exception as e:
+            messagebox.showerror("Error", f"{I18N[self.lang]['err_out_dir']}\n{out_dir}\n{e}")
+            return
+        self.app_cfg["output_dir"] = self.ent_out.get().strip()
+        self.save_app_config()
+
         self.cancel_token.clear()
         self.btn_run.config(state="disabled")
         self.btn_cancel.config(state="normal")
@@ -1411,10 +1535,10 @@ class ApplicationGUI:
 
                 # Export Results
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                out_excel = f"MSAN_Mobile_Results_{ts}.xlsx"
+                out_excel = os.path.join(out_dir, f"MSAN_Mobile_Results_{ts}.xlsx")
                 kml_audit_df = pd.DataFrame()
                 if cfg["export_kml"]:
-                    out_kml = f"MSAN_Mobile_Map_{ts}.kml"
+                    out_kml = os.path.join(out_dir, f"MSAN_Mobile_Map_{ts}.kml")
                     kml_audit_df = KMLExporter.export(
                         res_df,
                         out_kml,

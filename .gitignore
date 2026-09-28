@@ -13,6 +13,7 @@ env/
 *.kml
 *.csv
 *.log
+*.json
 
 # Dossiers d'éditeurs
 .vscode/
