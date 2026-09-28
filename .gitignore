@@ -1,0 +1,19 @@
+# Fichiers Python temporaires
+__pycache__/
+*.pyc
+
+# Environnements virtuels
+venv/
+env/
+.venv/
+
+# Données et fichiers générés (Excel, KML, CSV)
+*.xlsx
+*.xls
+*.kml
+*.csv
+*.log
+
+# Dossiers d'éditeurs
+.vscode/
+.idea/

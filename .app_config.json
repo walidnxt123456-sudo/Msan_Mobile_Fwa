@@ -1,0 +1,10 @@
+{
+    "last_msan_path": "",
+    "last_mob_path": "",
+    "top_n": 3,
+    "cand_pool": 15,
+    "max_dist_km": 50.0,
+    "locale_sep": ",",
+    "export_kml": true,
+    "window_size": "920x720+208+208"
+}
