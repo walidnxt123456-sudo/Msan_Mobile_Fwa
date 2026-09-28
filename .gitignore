@@ -15,6 +15,11 @@ env/
 *.log
 *.json
 
+# PyInstaller
+/build/
+/dist/
+*.spec
+
 # Dossiers d'éditeurs
 .vscode/
 .idea/
